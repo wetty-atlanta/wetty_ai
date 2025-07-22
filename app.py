@@ -3,57 +3,67 @@ import google.generativeai as genai
 from flask import Flask, request, jsonify, render_template
 
 # --- 初期設定 ---
-# Renderの環境変数からAPIキーを読み込みます
 api_key = os.getenv("GOOGLE_API_KEY")
-
-# APIキーが設定されていない場合は、エラーを出してアプリを停止させます
 if not api_key:
     raise ValueError("APIキーが設定されていません。Renderの環境変数を確認してください。")
-
 genai.configure(api_key=api_key)
 
 # --- グローバル変数の設定 ---
-# AIモデルをアプリ起動時に一度だけ、ここで準備します
+# AIモデルをアプリ起動時に一度だけ準備します
 try:
-    model = genai.GenerativeModel('gemini-pro')
+    model = genai.GenerativeModel('gemini-1.0-pro')
 except Exception as e:
     raise RuntimeError(f"Geminiモデルの初期化に失敗しました: {e}")
 
-# プロットファイルを読み込みます
-try:
-    with open('Bella.txt', 'r', encoding='utf-8') as f:
-        plot_content = f.read()
-except FileNotFoundError:
-    plot_content = "プロットファイル 'Bella.txt' が見つかりませんでした。"
+# 3つのプロットファイルを読み込みます
+def load_plot_file(filename):
+    try:
+        with open(filename, 'r', encoding='utf-8') as f:
+            return f.read()
+    except FileNotFoundError:
+        return f"プロットファイル '{filename}' が見つかりませんでした。"
 
-# Flaskアプリケーションを初期化します
+main_plot_content = load_plot_file('bella_main.txt')
+sequel_plot_content = load_plot_file('plot.txt')
+prequel_plot_content = load_plot_file('Original.txt')
+
 app = Flask(__name__)
 
-
 # --- 関数定義 ---
-def create_prompt(question, mode, plot):
+def create_prompt(question, mode):
     """ユーザーの選択モードに応じて、Geminiに渡すプロンプトを生成します。"""
     if mode == 'spoiler-free':
         prompt_template = f"""
 あなたは漫画『Bella』に関する質問に答える専門家チャットボットです。
 # ルール
-- 参照する情報は、提供されたプロットの「32話まで」に限定してください。
-- 33話以降の情報は絶対に回答に含めてはいけません。
-- ユーザーが未来の展開について質問しても、「まだ物語で語られていないため、お答えできません。」のように回答してください。
-# プロット
-{plot}
+- 参照する情報は、提供されたメインプロットの「32話まで」に限定してください。
+- 33話以降の情報、続編プロット、前日譚プロットの情報は絶対に回答に含めてはいけません。
+- ユーザーが未来の展開について質問しても、「現在公開されている範囲では、まだ語られていません。」のように回答してください。
+
+# メインプロット (bella_main.txt)
+{main_plot_content}
+
 # ユーザーの質問
 {question}
 """
     elif mode == 'spoiler-ok':
         prompt_template = f"""
-あなたは漫画『Bella』に関する質問に答える専門家チャットボットです。
+あなたは漫画『Bella』シリーズに関する質問に答える、知識豊富な解説者です。
 # ルール
-- 提供されたプロット全体の情報を参照して回答してください。
-- ただし、32話以降の「未公開の展開」については、直接的な答えを避け、読者の期待を煽るような「におわせる」表現にしてください。
-- 例えば、「〇〇という大きな出来事がありますが、それが彼女たちの運命をどう変えるのか、ぜひ本編で確かめてくださいね。」のような形で回答してください。
-# プロット
-{plot}
+- 提供された「前日譚」「メインプロット」「続編プロット」の全ての情報を最大限に活用し、ユーザーの質問に回答してください。
+- あなたの役割は、物語の全貌を理解しているファンからの深い質問に答えることです。
+- 情報を隠したり、におわせたりせず、「徹底的に」「詳しく」解説してください。
+- 物語の時系列（前日譚→メイン→続編）を意識し、キャラクターの動機や出来事の背景などを深く掘り下げて説明してください。
+
+# 前日譚プロット (Original.txt)
+{prequel_plot_content}
+---
+# メインプロット (bella_main.txt)
+{main_plot_content}
+---
+# 続編プロット (plot.txt)
+{sequel_plot_content}
+---
 # ユーザーの質問
 {question}
 """
@@ -64,12 +74,15 @@ def create_prompt(question, mode, plot):
 # --- WebページのルートとAPI ---
 @app.route('/')
 def index():
-    """トップページ（index.html）を表示します。"""
     return render_template('index.html')
 
 @app.route('/ask', methods=['POST'])
 def ask_gemini():
-    """フロントエンドからの質問を受け取り、Geminiに問い合わせて回答を返すAPIです。"""
+    # ファイル読み込みエラーがないかチェック
+    for content in [main_plot_content, sequel_plot_content, prequel_plot_content]:
+        if "見つかりませんでした" in content:
+            return jsonify({"error": content}), 500
+            
     data = request.get_json()
     question = data.get('question')
     mode = data.get('mode')
@@ -77,22 +90,17 @@ def ask_gemini():
     if not question or not mode:
         return jsonify({"error": "質問とモードを指定してください"}), 400
 
-    if plot_content.startswith("プロットファイル"):
-        return jsonify({"error": plot_content}), 500
-
-    prompt = create_prompt(question, mode, plot_content)
+    prompt = create_prompt(question, mode)
     if not prompt:
         return jsonify({"error": "無効なモードです"}), 400
 
     try:
-        # アプリ起動時に準備した「model」変数をここで使います
         response = model.generate_content(prompt)
+        # Markdown形式の回答を適切に処理
         answer = response.text
         return jsonify({"answer": answer})
     except Exception as e:
         return jsonify({"error": f"Gemini APIとの通信中にエラーが発生しました: {str(e)}"}), 500
 
-# この部分はローカルでのテスト実行時に使われます
 if __name__ == '__main__':
-    # Renderはgunicornを使うので、この部分は本番環境では実行されません
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
