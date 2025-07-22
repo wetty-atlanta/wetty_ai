@@ -11,7 +11,7 @@ genai.configure(api_key=api_key)
 # --- グローバル変数の設定 ---
 # AIモデルをアプリ起動時に一度だけ準備します
 try:
-    model = genai.GenerativeModel('gemini-1.0-pro')
+    model = genai.GenerativeModel('gemini-1.5-pro')
 except Exception as e:
     raise RuntimeError(f"Geminiモデルの初期化に失敗しました: {e}")
 
