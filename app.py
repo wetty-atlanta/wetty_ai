@@ -3,34 +3,31 @@ import google.generativeai as genai
 from flask import Flask, request, jsonify, render_template
 
 # --- 初期設定 ---
-# コードに直接書く代わりに「環境変数」からAPIキーを読み込む
-# これにより、APIキーを安全に管理できる
 api_key = os.getenv("GOOGLE_API_KEY")
 
+# APIキーが設定されているか確認
 if not api_key:
-    # ローカルでテストする際は、一時的にここで設定することも可能
-    # ただし、このコードをGitHubなどに公開しないこと
-    # api_key = "YOUR_API_KEY_FOR_LOCAL_TEST"
-    # 本番環境では環境変数設定が必須
-    pass
+    raise ValueError("APIキーが設定されていません。Renderの環境変数を確認してください。")
 
 genai.configure(api_key=api_key)
 
-# (以下、前回のコードと同じ...Flaskアプリケーションの初期化から最後まで)
-# ...
+# ▼▼▼【変更点 1】AIモデルをアプリ起動時に一度だけ準備する ▼▼▼
+try:
+    model = genai.GenerativeModel('gemini-pro')
+except Exception as e:
+    # モデルの初期化に失敗した場合、アプリを起動しないようにする
+    raise RuntimeError(f"Geminiモデルの初期化に失敗しました: {e}")
+# ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+
 app = Flask(__name__)
 
-# プロットデータの読み込み
 try:
     with open('Bella.txt', 'r', encoding='utf-8') as f:
         plot_content = f.read()
 except FileNotFoundError:
     plot_content = "プロットファイル 'Bella.txt' が見つかりませんでした。"
 
-# Geminiモデルの初期化
-# model = genai.GenerativeModel('gemini-pro') # この行は genai.configure の後であれば不要な場合がある
-
-# --- プロンプト（AIへの指示書）を作成する関数 ---
+# (create_prompt関数は変更なしなので、省略)
 def create_prompt(question, mode, plot):
     """
     ユーザーの選択モードに応じて、Geminiに渡すプロンプトを生成します。
@@ -74,49 +71,33 @@ def create_prompt(question, mode, plot):
         return None
     return prompt_template
 
-
-# --- WebページのルートとAPI ---
-
-# ルートURL ('/') にアクセスがあった場合に index.html を表示
 @app.route('/')
 def index():
     return render_template('index.html')
 
-# '/ask' へのPOSTリクエストを処理するAPI
 @app.route('/ask', methods=['POST'])
 def ask_gemini():
-    """
-    フロントエンドからの質問を受け取り、Geminiに問い合わせて回答を返すAPI。
-    """
     data = request.get_json()
     question = data.get('question')
-    mode = data.get('mode')  # 'spoiler-free' または 'spoiler-ok'
+    mode = data.get('mode')
 
-    if not model:
-        return jsonify({"error": "モデルが初期化されていません。APIキーを確認してください。"}), 500
-        
     if not question or not mode:
         return jsonify({"error": "質問とモードを指定してください"}), 400
 
     if plot_content.startswith("プロットファイル"):
         return jsonify({"error": plot_content}), 500
 
-    # プロンプトを作成
     prompt = create_prompt(question, mode, plot_content)
     if not prompt:
         return jsonify({"error": "無効なモードです"}), 400
 
     try:
-        # Geminiにリクエストを送信
-        model = genai.GenerativeModel('gemini-pro')
+        # ▼▼▼【変更点 2】ここでモデルを準備する記述を削除し、準備済みのモデルを使う ▼▼▼
         response = model.generate_content(prompt)
         answer = response.text
         return jsonify({"answer": answer})
     except Exception as e:
-        # エラーが発生した場合
         return jsonify({"error": f"Gemini APIとの通信中にエラーが発生しました: {str(e)}"}), 500
 
-# --- アプリケーションの実行 ---
-# この部分はRenderがGunicornを使うため、ローカル実行時のみ意味を持つ
 if __name__ == '__main__':
-    app.run(debug=False, host='0.0.0.0')
+    app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
